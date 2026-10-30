@@ -1,0 +1,53 @@
+# .github/workflows/lint.yaml
+# CI gate: ruff, ratcheted — a PR may not ADD findings, but is not asked to clear
+# the ones it inherited.
+#
+# The tree carries a backlog of pre-existing findings (exception naming, mixed-case
+# schema fields, a few long lines). Two simpler designs were tried and rejected:
+#
+#   * gate the whole tree  -> fails every PR for findings its author never touched.
+#   * gate the changed FILES -> a one-line import reorder in a legacy file makes its
+#     author responsible for that file's whole history. Measured on the PR that
+#     added this gate: 12 changed files carried 7 findings that predated it.
+#
+# So scripts/ruff_ratchet.py counts findings per (file, rule) at the base and at
+# the head and fails only on an increase. Immune to line shifts, and a fix in one
+# file cannot mask a regression in another.
+name: Lint
+
+on:
+  pull_request:
+    paths:
+      - "src/**/*.py"
+      - "tests/**/*.py"
+      - "pyproject.toml"
+      - "scripts/**/*.py"
+      - ".github/workflows/lint.yaml"
+  workflow_dispatch:
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The ratchet checks the base ref out into a worktree, so the full
+          # history has to be present — a shallow clone has no base to compare.
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ruff
+        # Pinned exactly, and inside the dev group's >=0.15,<0.16 range: a gate has
+        # to be reproducible, and a new ruff minor can add rules that would fail
+        # PRs which changed nothing.
+        run: pip install "ruff==0.15.21"
+
+      - name: Ruff ratchet (no new findings)
+        run: python3 scripts/ruff_ratchet.py "${{ github.event.pull_request.base.sha }}"
+
+      - name: Backlog, for visibility (never fails the build)
+        if: always()
+        run: |
+          echo "Remaining findings on this branch:"
+          ruff check src tests scripts --statistics || true

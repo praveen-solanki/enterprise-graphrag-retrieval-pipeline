@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ai-graph-retrieval</title>
+<style>
+  :root { --bg:#f3f0e8; --ink:#1c1915; --card:#fffdf8; --line:#ddd4c4; --accent:#1f6b4a; --muted:#6d655c; }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 15px/1.45 "Iowan Old Style", Palatino, Georgia, serif; color:var(--ink); background:var(--bg); }
+  header, main { max-width: 1100px; margin: 0 auto; padding: 20px 20px 0; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+  p.sub { margin: 0; color: var(--muted); font-size: 14px; }
+  form { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin: 16px 0; }
+  label { display:block; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin: 8px 0 4px; }
+  input, select, textarea { width: 100%; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); }
+  textarea { min-height: 72px; resize: vertical; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  button { margin-top: 12px; background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: progress; }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); margin-left: 8px; }
+  #status { min-height: 1.2em; color: var(--muted); font-size: 14px; }
+  #status.err { color: #8a2b2b; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; margin-bottom: 28px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .card h2 { font-size: 14px; margin: 0 0 8px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  #answer { white-space: normal; }
+  #answer a { color: var(--accent); }
+  .meta { display:flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .chip { font: 12px/1 ui-sans-serif, system-ui, sans-serif; background: #efeadd; border-radius: 99px; padding: 2px 8px; }
+  ul.sources { margin: 8px 0 0; padding-left: 18px; }
+  svg { width: 100%; height: 460px; background: #fbf9f4; border-radius: 8px; }
+  svg text { font: 11px ui-sans-serif, system-ui, sans-serif; }
+  #detail { min-height: 2.4em; font-size: 13px; color: var(--muted); margin-top: 8px; }
+  .legend { display:flex; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .sw { display:inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; }
+  @media (max-width: 800px) { .row, .split { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>ai-graph-retrieval</h1>
+  <p class="sub">Ask the knowledge graph. The drawing is the subgraph the answer rests on.</p>
+</header>
+<main>
+  <form id="ask">
+    <label for="q">Question</label>
+    <textarea id="q" required placeholder="What is Blazegraph?"></textarea>
+    <div class="row">
+      <div>
+        <label for="mode">Mode</label>
+        <select id="mode">
+          <option value="search">search</option>
+          <option value="super_research">super research</option>
+        </select>
+      </div>
+      <div>
+        <label for="tenant">Tenant</label>
+        <select id="tenant"></select>
+      </div>
+    </div>
+    <button type="submit" id="go">Ask</button>
+    <p id="status"></p>
+    <div id="clarify"></div>
+  </form>
+  <div class="split">
+    <section class="card">
+      <h2>Answer</h2>
+      <div class="meta" id="meta"></div>
+      <div id="answer">Ask a question to see the grounded answer.</div>
+      <ul class="sources" id="sources"></ul>
+    </section>
+    <section class="card">
+      <h2>Graph</h2>
+      <svg id="graph" viewBox="0 0 640 460"></svg>
+      <div class="legend">
+        <span><i class="sw" style="background:#1f6b4a"></i>entity</span>
+        <span><i class="sw" style="background:#8a5a2b"></i>document</span>
+        <span><i class="sw" style="background:#3d5a80"></i>passage</span>
+        <span><i class="sw" style="background:#6b3a5a"></i>claim</span>
+      </div>
+      <div id="detail">Click a node or an edge.</div>
+    </section>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const KIND = { entity:"#1f6b4a", document:"#8a5a2b", chunk:"#3d5a80", claim:"#6b3a5a" };
+let pending = null;
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+}
+function answerHtml(text) {
+  return esc(text)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\n/g, "<br>");
+}
+function selectedTenant() {
+  const opt = $("tenant").selectedOptions[0];
+  if (!opt) return { id: "", connectors: [] };
+  let connectors = [];
+  try { connectors = JSON.parse(opt.dataset.connectors || "[]"); } catch (e) { connectors = []; }
+  return { id: opt.value, connectors };
+}
+function payload() {
+  const body = { question: $("q").value.trim(), mode: $("mode").value };
+  const connectors = selectedTenant().connectors;
+  if (connectors.length) body.connectorType = connectors.length === 1 ? connectors[0] : connectors;
+  return body;
+}
+function headers() {
+  const h = { "content-type": "application/json" };
+  const tenant = selectedTenant().id;
+  if (tenant) h["x-tenant-id"] = tenant;
+  return h;
+}
+async function loadTenants() {
+  const sel = $("tenant");
+  try {
+    const res = await fetch("/v1/graph/tenants");
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Could not list tenants");
+    sel.replaceChildren();
+    for (const t of data.tenants || []) {
+      const opt = document.createElement("option");
+      opt.value = t.tenant_id;
+      opt.dataset.connectors = JSON.stringify(t.connectors || []);
+      opt.textContent = t.tenant_id + " — " + (t.connectors || []).join(", ");
+      sel.appendChild(opt);
+    }
+    if (!sel.options.length) setStatus("No completed ingestion runs to search.", true);
+  } catch (err) {
+    setStatus(String(err.message || err), true);
+  }
+}
+loadTenants();
+function setStatus(text, err) {
+  $("status").textContent = text;
+  $("status").className = err ? "err" : "";
+}
+
+function draw(graph) {
+  const svg = $("graph");
+  const nodes = (graph && graph.nodes) || [];
+  const edges = (graph && graph.edges) || [];
+  svg.replaceChildren();
+  if (!nodes.length) {
+    $("detail").textContent = "No graph for this answer.";
+    return;
+  }
+  const w = 640, h = 460, cx = w / 2, cy = h / 2;
+  const r = Math.min(w, h) * (nodes.length === 1 ? 0 : 0.36);
+  const pos = {};
+  nodes.forEach((n, i) => {
+    const a = (2 * Math.PI * i) / nodes.length - Math.PI / 2;
+    pos[n.id] = { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) };
+  });
+  const ns = "http://www.w3.org/2000/svg";
+  const el = (name, attrs) => {
+    const e = document.createElementNS(ns, name);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    return e;
+  };
+  for (const e of edges) {
+    const a = pos[e.source], b = pos[e.target];
+    if (!a || !b) continue;
+    const line = el("line", { x1:a.x, y1:a.y, x2:b.x, y2:b.y, stroke:"#c4bbaa", "stroke-width":"1.4" });
+    line.style.cursor = "pointer";
+    line.addEventListener("click", () => {
+      $("detail").textContent = (e.label || "edge") + (e.why ? " — " + e.why : "");
+    });
+    svg.appendChild(line);
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    svg.appendChild(el("text", { x:mx, y:my - 4, "text-anchor":"middle", fill:"#6d655c" })).textContent =
+      (e.label || "").slice(0, 22);
+  }
+  const rad = nodes.length > 18 ? 11 : 16;
+  for (const n of nodes) {
+    const p = pos[n.id];
+    const c = el("circle", { cx:p.x, cy:p.y, r:rad, fill: KIND[n.kind] || KIND.entity, stroke:"#fff", "stroke-width":"2" });
+    c.style.cursor = "pointer";
+    c.addEventListener("click", () => {
+      $("detail").textContent = (n.label || n.id) + (n.role ? " — " + n.role : "") + (n.description ? " " + n.description : "");
+    });
+    svg.appendChild(c);
+    const t = el("text", { x:p.x, y:p.y + rad + 12, "text-anchor":"middle", fill:"#1c1915" });
+    t.textContent = String(n.label || n.id).slice(0, 28);
+    svg.appendChild(t);
+  }
+  $("detail").textContent = nodes.length + " nodes, " + edges.length + " edges. Click one.";
+}
+
+function show(data) {
+  $("answer").innerHTML = answerHtml(data.answer || "(no answer text)");
+  const ev = data.evidence || {};
+  const chips = [
+    data.answer_found === false ? "no evidence" : "answer found",
+    data.mode, data.strategy,
+    data.duration_ms != null ? (data.duration_ms / 1000).toFixed(1) + "s" : "",
+    ev.entities != null ? ev.entities.length + " entities" : "",
+    ev.facts != null ? ev.facts.length + " facts" : "",
+    ev.claims != null ? ev.claims.length + " claims" : "",
+  ].filter(Boolean);
+  const run = (data.options_applied || {}).run;
+  if (run && run.sources) chips.push(run.sources.map((s) => s.database).join(", "));
+  $("meta").innerHTML = chips.map((c) => '<span class="chip">' + esc(c) + "</span>").join("");
+  const sources = (data.citations && data.citations.length ? data.citations : (ev.sources || []));
+  $("sources").innerHTML = sources.map((s) => {
+    const title = esc(s.title || s.doc_id || "source");
+    return "<li>" + (s.url ? '<a href="' + esc(s.url) + '" target="_blank" rel="noopener">' + title + "</a>" : title) + "</li>";
+  }).join("");
+  const actions = data.suggested_actions || [];
+  if (actions.length) {
+    $("sources").insertAdjacentHTML("beforeend",
+      "<li><em>Follow-ups:</em> " + actions.map((a) => esc(a.label || "")).join(" · ") + "</li>");
+  }
+  draw(data.answer_graph);
+}
+
+function showClarify(data) {
+  pending = data;
+  const box = $("clarify");
+  box.replaceChildren();
+  const note = document.createElement("p");
+  note.textContent = "The service needs a clarification before it searches.";
+  box.appendChild(note);
+  (data.questions || []).forEach((q) => {
+    const wrap = document.createElement("div");
+    const lab = document.createElement("label");
+    lab.textContent = q.question;
+    wrap.appendChild(lab);
+    (q.options || []).forEach((o) => {
+      const id = "opt-" + q.id + "-" + o.id;
+      const row = document.createElement("div");
+      row.innerHTML = '<label style="text-transform:none;letter-spacing:0;font-size:14px;color:inherit"><input type="' +
+        (q.allow_multiple ? "checkbox" : "radio") + '" name="q-' + esc(q.id) + '" value="' + esc(o.id) + '" id="' + esc(id) + '"> ' + esc(o.label) + "</label>";
+      wrap.appendChild(row);
+    });
+    const free = document.createElement("input");
+    free.placeholder = "Or type an answer";
+    free.dataset.qid = q.id;
+    free.className = "free";
+    wrap.appendChild(free);
+    box.appendChild(wrap);
+  });
+  const go = document.createElement("button");
+  go.type = "button";
+  go.textContent = "Continue";
+  go.addEventListener("click", resume);
+  box.appendChild(go);
+}
+
+async function post(path, body) {
+  setStatus("Searching the graph… this often takes half a minute.");
+  $("go").disabled = true;
+  try {
+    const res = await fetch(path, { method: "POST", headers: headers(), body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({ message: res.statusText }));
+    if (res.status === 202 && data.status === "awaiting_clarification") {
+      setStatus("Answer the question below.");
+      showClarify(data);
+      return;
+    }
+    if (!res.ok) {
+      setStatus(data.message || data.detail || ("Request failed (" + res.status + ")"), true);
+      return;
+    }
+    $("clarify").replaceChildren();
+    pending = null;
+    setStatus("");
+    show(data);
+  } catch (err) {
+    setStatus(String(err.message || err), true);
+  } finally {
+    $("go").disabled = false;
+  }
+}
+
+$("ask").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  post("/v1/graph/retrieve", payload());
+});
+
+function resume() {
+  if (!pending) return;
+  const answers = (pending.questions || []).map((q) => {
+    const selected = [...document.querySelectorAll('input[name="q-' + q.id + '"]:checked')].map((el) => el.value);
+    const free = document.querySelector('input.free[data-qid="' + q.id + '"]');
+    return { question_id: q.id, selected_option_ids: selected, free_text: (free && free.value.trim()) || null };
+  }).filter((a) => a.selected_option_ids.length || a.free_text);
+  if (!answers.length) { setStatus("Pick or type an answer first.", true); return; }
+  const body = payload();
+  delete body.question;
+  body.conversation_id = pending.conversation_id;
+  body.answers = answers;
+  post("/v1/graph/retrieve/resume", body);
+}
+</script>
+</body>
+</html>

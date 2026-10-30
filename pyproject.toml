@@ -1,0 +1,108 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ai-graph-retrieval"
+version = "0.1.0"
+description = "ACL-aware GraphRAG retrieval service over a Neo4j + Qdrant knowledge graph, with SSE streaming and an OpenAI-compatible LLM backend (NVIDIA NIM, vLLM, OpenAI)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn[standard]>=0.30,<1",
+    "pydantic>=2.7,<3",
+    "pydantic-settings>=2.3,<3",
+    "neo4j>=5.23,<6",
+    "httpx>=0.27,<1",            # Neo4j Query API v2 transport (servers without Bolt)
+    "qdrant-client>=1.10,<2",    # chunk/entity vector store; query_points needs >=1.10
+    "openai-agents>=0.1,<1",     # research agent loop
+    "litellm>=1.84,<2",          # OpenAI-compatible chat client; floor = last security-patched line
+    "openai>=2.20,<3",           # OpenAI-compatible embeddings client (2.x required by litellm >= 1.83)
+    "structlog>=24.1,<26",
+    "sse-starlette>=2.1,<3",
+    "tenacity>=8.3,<10",
+    "truststore>=0.10,<1",
+]
+
+[project.scripts]
+ai-graph-retrieval = "ai_graph_retrieval.main:run"
+
+[project.optional-dependencies]
+# Every import of these is guarded: without the extra the feature is a logged no-op.
+tracing = [
+    "opentelemetry-sdk>=1.27,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.27,<2",
+]
+mongo = [
+    "pymongo>=4.6,<5",           # run_registry lookup + conversation store
+]
+redis = [
+    "redis>=5,<6",               # shared clarification sessions / conversation ownership
+]
+all = ["ai-graph-retrieval[tracing,mongo,redis]"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3,<10",  # 9.0.3 = tmpdir-handling advisory fix (CVE-2025-71176; dev-only dep)
+    # Same minor as the CI gate (.github/workflows/lint.yaml) so a local run and
+    # the PR check cannot disagree about what is a finding.
+    "ruff>=0.15,<0.16",
+    # Span-SHAPE tests (tests/test_trace_hierarchy.py) need a real tracer +
+    # in-memory exporter to prove parent/child links — the guarantee that breaks
+    # silently when a span crosses an asyncio task.
+    "opentelemetry-sdk>=1.27,<2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ai_graph_retrieval"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/ai_graph_retrieval/ui/index.html" = "ai_graph_retrieval/ui/index.html"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "ASYNC", "S", "C4", "SIM", "RUF"]
+ignore = [
+    "S101",  # asserts are fine outside prod hot paths
+]
+
+# Per-path ignores, each for a rule that is a FALSE POSITIVE in that location —
+# never a rule switched off because clearing it would be work.
+[tool.ruff.lint.per-file-ignores]
+# B008 forbids a function call in an argument default. FastAPI's dependency
+# injection is exactly that call — `x = Depends(get_x)` in the signature is the
+# framework's documented idiom, and the rule's suggested fix (call it inside the
+# body) removes the injection. Scoped to the modules that declare routes and
+# dependencies, so a genuine mutable-default bug elsewhere still reports.
+"src/ai_graph_retrieval/api/deps.py" = ["B008"]
+"src/ai_graph_retrieval/api/routes/*.py" = ["B008"]
+# S106 flags a string literal passed to an argument whose NAME looks secret. In
+# tests those arguments carry deliberate dummies ("pk", "http://svc",
+# "not-a-real-secret") — the rule is matching the parameter name, not a real
+# credential. Values are kept un-key-shaped on purpose so a separate secrets
+# scanner has nothing to match either. Tests only: a literal secret in src/ must
+# still be reported.
+"tests/*.py" = ["S106"]
+# S311 flags `random.Random` as unfit for crypto. These two files shuffle
+# fixtures with a seeded RNG to prove ranking is insertion-order independent —
+# cryptographic strength is the opposite of what the test needs.
+"tests/test_enumeration_survives_digest.py" = ["S311"]
+"tests/test_retrieval_determinism.py" = ["S311"]
+# The dev/CI scripts shell out to git and ruff. S603 wants proof the input is
+# trusted and S607 wants an absolute executable path — but every call here passes a
+# FIXED argv list (never shell=True, so nothing is word-split or interpolated), and
+# resolving git/ruff from PATH is how CI invokes them in the first place. Hardcoding
+# /usr/bin/git would break on every runner image that puts it elsewhere.
+"scripts/*.py" = ["S603", "S607"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ai_graph_retrieval"]

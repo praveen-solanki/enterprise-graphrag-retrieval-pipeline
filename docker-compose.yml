@@ -1,0 +1,29 @@
+# Runs the retrieval service against the stores of the ai-graph-ingestion stack
+# (start that stack first: it publishes Neo4j, Qdrant and MongoDB on the host).
+#
+#   cp .env.example .env   # set NVIDIA_API_KEY (and the store passwords if changed)
+#   docker compose up --build
+#
+# Inside the container "localhost" is the container itself, so the store
+# endpoints below point at the host instead; everything else comes from .env.
+services:
+  retrieval:
+    build: .
+    container_name: ai-graph-retrieval
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NEO4J_URI: bolt://host.docker.internal:7687
+      NEO4J_HTTP_URL: ""
+      QDRANT_URL: http://host.docker.internal:6333
+      MONGO_URI: ${COMPOSE_MONGO_URI:-mongodb://root:local-dev-password@host.docker.internal:27017/?authSource=admin}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "5000:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

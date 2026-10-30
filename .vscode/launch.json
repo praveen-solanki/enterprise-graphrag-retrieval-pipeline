@@ -1,0 +1,20 @@
+{
+  // VS Code debug config: launches the same entrypoint as the `ai-graph-retrieval`
+  //   console script (main.run -> uvicorn, NO --reload) so the debugger stays
+  //   attached to one process. The .env in this folder is read automatically by
+  //   pydantic-settings (settings.py).
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "ai-graph-retrieval: run server (debug)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "ai_graph_retrieval.main",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "env": { "PYTHONUNBUFFERED": "1" }
+    }
+  ]
+}

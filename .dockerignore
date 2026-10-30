@@ -1,0 +1,22 @@
+# Keep the build context small and keep secrets/local cruft OUT of the image.
+.git
+.github
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Secrets / local env — MUST never enter the image (config comes from env at runtime).
+.env
+.env.*
+!.env.example
+
+# Not needed at runtime.
+tests/
+dev-ui/
+docs/
+.claude/
+*.md
+!README.md
